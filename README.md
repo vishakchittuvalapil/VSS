@@ -40,7 +40,7 @@ Place the downloaded scripts in the respective folder on your cloud shell.
 Navigate to the `scripts` folder and execute the  scripts:
 Eg:
 ```bash
-python vss_cloudguard_report_script.py
+python3 vss_cloudguard_report_script.py
 ```
 ### 4. Finally download the output from CLoudshell.
 This script will generate insights and save them to the `visualizations/` folder.
