@@ -10,9 +10,9 @@ RULE_HOST_OPEN_PORTS = "SCANNED_HOST_OPEN_PORTS"
 RULES = {RULE_HOST_VULN, RULE_CONTAINER_VULN, RULE_HOST_OPEN_PORTS}
 
 # ---- Output ----
-XLSX_OUT = "cloudguard_problems.xlsx"
+XLSX_OUT = "vss_cloudguard_problems.xlsx"
 
-# Excel sheet names must be <= 31 chars
+# Excel sheet names
 SHEET_NAMES = {
     RULE_HOST_VULN: "Host_Vuln",
     RULE_CONTAINER_VULN: "Container_Vuln",
