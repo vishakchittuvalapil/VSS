@@ -1,161 +1,248 @@
+#!/usr/bin/env python3
+import os, json
 import oci
-from datetime import datetime, timedelta
 import pandas as pd
 
-# Function to convert datetime with timezone to string in ISO format
-def datetime_with_timezone_to_string(dt):
-    if dt and hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
-        return dt.isoformat()  # Convert to ISO string with timezone info
+# ---- Detector rules to export ----
+RULE_HOST_VULN = "SCANNED_HOST_VULNERABILITY"
+RULE_CONTAINER_VULN = "SCANNED_CONTAINER_IMAGE_VULNERABILITY"
+RULE_HOST_OPEN_PORTS = "SCANNED_HOST_OPEN_PORTS"
+RULES = {RULE_HOST_VULN, RULE_CONTAINER_VULN, RULE_HOST_OPEN_PORTS}
+
+# ---- Output ----
+XLSX_OUT = "cloudguard_problems.xlsx"
+
+# Excel sheet names must be <= 31 chars
+SHEET_NAMES = {
+    RULE_HOST_VULN: "Host_Vuln",
+    RULE_CONTAINER_VULN: "Container_Vuln",
+    RULE_HOST_OPEN_PORTS: "Host_Open_Ports",
+}
+
+# ---- Common columns on all sheets ----
+COMMON_COLS = [
+    "Problem OCID",
+    "Detector Rule ID",
+    "Detector ID",
+    "Risk Level",
+    "Risk Score",
+    "Lifecycle State",
+    "Lifecycle Detail",
+    "Region",
+    "Compartment OCID",
+    "Target OCID",
+    "Resource OCID",
+    "Resource Name",
+    "Resource Type",
+    "First Detected",
+    "Last Detected",
+    "Recommendation",
+    "Description",
+    "Labels",
+]
+
+# ---- Host vulnerability CVE columns (order as you like) ----
+HOST_VULN_KEYS = [
+    "CVE Critical Count",
+    "CVE High Count",
+    "CVE Medium Count",
+    "CVE Low Count",
+    "Critical CVEs",
+    "High CVEs",
+    "Medium CVEs",
+    "Low CVEs",
+]
+
+# ---- Container sheet: alignment you requested (container-only fields) ----
+CONTAINER_ONLY_AD_KEYS = [
+    "Number of Critical severity problems",
+    "Number of High severity problems",
+    "Number of Medium severity problems",
+    "Number of Low severity problems",
+    "Critical Severity Problems",
+    "High Severity Problems",
+    "Medium Severity Problems",
+    "Low Severity Problems",
+]
+
+# Optional: keep CVE columns on Container sheet too (set [] to remove them)
+CONTAINER_VULN_KEYS = [
+    "CVE Critical Count",
+    "CVE High Count",
+    "CVE Medium Count",
+    "CVE Low Count",
+    "Critical CVEs",
+    "High CVEs",
+    "Medium CVEs",
+    "Low CVEs",
+]
+
+# ---- Host open ports columns ----
+OPEN_PORT_KEYS = [
+    "Open ports",
+    "Disallowed ports list",
+    "Allowed ports list",
+]
+
+EMPTY_MAP = {"": pd.NA, "None": pd.NA, "N/A": pd.NA, "null": pd.NA}
+
+
+def ensure_region(cfg: dict) -> dict:
+    if not cfg.get("region"):
+        cfg["region"] = os.getenv("OCI_REGION") or os.getenv("OCI_DEFAULT_REGION") or "us-ashburn-1"
+    return cfg
+
+
+def dt_to_str(dt):
     return dt.isoformat() if dt else None
 
-# Load OCI configuration
-config = oci.config.from_file()
 
-# Get the current date and calculate the date 180 days ago
-today = datetime.today()
-first_date = today - timedelta(days=180)
-print(f"Fetching problems detected since: {first_date}")
+def to_cell(v):
+    if v is None:
+        return None
+    if isinstance(v, (dict, list)):
+        return json.dumps(v, ensure_ascii=False)
+    return v
 
-# Initialize the Cloud Guard client
-cloud_guard_client = oci.cloud_guard.CloudGuardClient(config)
 
-# Fetch all problems
-list_problems_response = cloud_guard_client.list_problems(
-    compartment_id=config['tenancy'],
-    compartment_id_in_subtree=True,
-    access_level="ACCESSIBLE",
-    time_first_detected_greater_than_or_equal_to=first_date,
-    limit=1000  # Adjust limit as needed
-)
+def list_all_problems(cg, tenancy_ocid):
+    data = oci.pagination.list_call_get_all_results(
+        cg.list_problems,
+        compartment_id=tenancy_ocid,
+        compartment_id_in_subtree=True,
+        access_level="ACCESSIBLE",
+        limit=1000,
+    ).data
+    return data.items if hasattr(data, "items") else data
 
-# Access the list of problems
-problems = list_problems_response.data.items
 
-# Filter problems for "Scanned host has vulnerabilities"
-filtered_vulnerabilities = [
-    problem for problem in problems
-    if problem.detector_rule_id == "SCANNED_HOST_VULNERABILITY"
-]
+def base_row(d):
+    return {
+        "Problem OCID": d.id,
+        "Detector Rule ID": getattr(d, "detector_rule_id", None),
+        "Detector ID": getattr(d, "detector_id", None),
+        "Risk Level": getattr(d, "risk_level", None),
+        "Risk Score": getattr(d, "risk_score", None),
+        "Lifecycle State": getattr(d, "lifecycle_state", None),
+        "Lifecycle Detail": getattr(d, "lifecycle_detail", None),
+        "Region": getattr(d, "region", None),
+        "Compartment OCID": getattr(d, "compartment_id", None),
+        "Target OCID": getattr(d, "target_id", None),
+        "Resource OCID": getattr(d, "resource_id", None),
+        "Resource Name": getattr(d, "resource_name", None),
+        "Resource Type": getattr(d, "resource_type", None),
+        "First Detected": dt_to_str(getattr(d, "time_first_detected", None)),
+        "Last Detected": dt_to_str(getattr(d, "time_last_detected", None)),
+        "Recommendation": getattr(d, "recommendation", None),
+        "Description": getattr(d, "description", None),
+        "Labels": "; ".join(getattr(d, "labels", None) or []) or None,
+    }
 
-# Filter problems for "Scanned host has open ports"
-filtered_open_ports = [
-    problem for problem in problems
-    if problem.detector_rule_id == "SCANNED_HOST_OPEN_PORTS"
-]
 
-# Initialize lists to hold rows for both sheets
-vulnerabilities_data = []
-open_ports_data = []
+def drop_all_empty_cols(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    df = df.replace(EMPTY_MAP).infer_objects(copy=False)
+    return df.dropna(axis=1, how="all")
 
-# Process "Scanned host has vulnerabilities"
-for problem in filtered_vulnerabilities:
-    # Fetch detailed problem information
-    problem_details = cloud_guard_client.get_problem(problem.id).data
 
-    # Extract relevant fields
-    problem_ocid = problem_details.id
-    resource_ocid = problem_details.resource_id
-    resource_name = problem_details.resource_name
-    resource_type = problem_details.resource_type
-    risk_level = problem_details.risk_level
-    status = problem_details.lifecycle_detail
-    region = problem_details.region
-    compartment_id = problem_details.compartment_id
-    first_detected = datetime_with_timezone_to_string(problem_details.time_first_detected)
-    last_detected = datetime_with_timezone_to_string(problem_details.time_last_detected)
+def ensure_schema(df: pd.DataFrame, columns: list) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+    for c in columns:
+        if c not in df.columns:
+            df[c] = None
+    return df[columns]
 
-    # CVE Details
-    number_critical_cves = problem_details.additional_details.get("Number of Critical CVEs", "0")
-    number_high_cves = problem_details.additional_details.get("Number of High CVEs", "0")
-    number_medium_cves = problem_details.additional_details.get("Number of Medium CVEs", "0")
-    number_low_cves = problem_details.additional_details.get("Number of Low CVEs", "0")
 
-    critical_cves = problem_details.additional_details.get("Critical CVEs", "[]")
-    high_cves = problem_details.additional_details.get("High CVEs", "[]")
-    medium_cves = problem_details.additional_details.get("Medium CVEs", "[]")
-    low_cves = problem_details.additional_details.get("Low CVEs", "[]")
+def get_add(add: dict, key: str):
+    return to_cell((add or {}).get(key))
 
-    # Recommendation and Description
-    recommendation = problem_details.recommendation or "No recommendation available"
-    description = problem_details.description or "No description available"
 
-    # Additional fields
-    lifecycle_state = problem_details.lifecycle_state
-    labels = "; ".join(problem_details.labels) if problem_details.labels else "None"
-    detector_id = problem_details.detector_id
+def main():
+    cfg = ensure_region(oci.config.from_file())
+    cg = oci.cloud_guard.CloudGuardClient(cfg)
 
-    # Add row to vulnerabilities data
-    vulnerabilities_data.append([
-        problem_ocid, resource_ocid, resource_name, resource_type, 
-        risk_level, status, region, compartment_id, 
-        first_detected, last_detected, number_critical_cves, 
-        number_high_cves, number_medium_cves, number_low_cves, 
-        critical_cves, high_cves, medium_cves, low_cves, 
-        recommendation, description, lifecycle_state, labels, detector_id
-    ])
+    print(f"Using region: {cfg['region']}")
 
-# Process "Scanned host has open ports"
-for problem in filtered_open_ports:
-    # Fetch detailed problem information
-    problem_details = cloud_guard_client.get_problem(problem.id).data
+    problems = list_all_problems(cg, cfg["tenancy"])
+    filtered = [p for p in problems if getattr(p, "detector_rule_id", None) in RULES]
 
-    # Extract relevant fields
-    problem_ocid = problem_details.id
-    resource_ocid = problem_details.resource_id
-    resource_name = problem_details.resource_name
-    resource_type = problem_details.resource_type
-    risk_level = problem_details.risk_level
-    status = problem_details.lifecycle_detail
-    region = problem_details.region
-    compartment_id = problem_details.compartment_id
-    first_detected = datetime_with_timezone_to_string(problem_details.time_first_detected)
-    last_detected = datetime_with_timezone_to_string(problem_details.time_last_detected)
+    print(f"Total problems returned: {len(problems)}")
+    print(f"Matched target rule IDs: {len(filtered)}")
 
-    # Extract additional details
-    additional_details = problem_details.additional_details or {}
-    open_ports = additional_details.get("Open ports", "N/A")
-    disallowed_ports = additional_details.get("Disallowed ports list", "N/A")
+    host_vuln_rows, container_vuln_rows, host_open_ports_rows = [], [], []
 
-    # Recommendation and Description
-    recommendation = problem_details.recommendation or "No recommendation available"
-    description = problem_details.description or "No description available"
+    for i, p in enumerate(filtered, start=1):
+        d = cg.get_problem(p.id).data
+        add = d.additional_details or {}
+        rid = getattr(d, "detector_rule_id", None)
 
-    # Additional fields
-    lifecycle_state = problem_details.lifecycle_state
-    labels = "; ".join(problem_details.labels) if problem_details.labels else "None"
-    detector_id = problem_details.detector_id
+        row = base_row(d)
 
-    # Add row to open ports data
-    open_ports_data.append([
-        problem_ocid, resource_ocid, resource_name, resource_type, 
-        risk_level, status, region, compartment_id, 
-        first_detected, last_detected, open_ports, 
-        disallowed_ports, recommendation, 
-        description, lifecycle_state, labels, detector_id
-    ])
+        if rid == RULE_HOST_VULN:
+            row.update({
+                "CVE Critical Count": get_add(add, "CVE Critical Count") or get_add(add, "Number of Critical CVEs"),
+                "CVE High Count":     get_add(add, "CVE High Count")     or get_add(add, "Number of High CVEs"),
+                "CVE Medium Count":   get_add(add, "CVE Medium Count")   or get_add(add, "Number of Medium CVEs"),
+                "CVE Low Count":      get_add(add, "CVE Low Count")      or get_add(add, "Number of Low CVEs"),
+                "Critical CVEs":      get_add(add, "Critical CVEs"),
+                "High CVEs":          get_add(add, "High CVEs"),
+                "Medium CVEs":        get_add(add, "Medium CVEs"),
+                "Low CVEs":           get_add(add, "Low CVEs"),
+            })
+            host_vuln_rows.append(row)
 
-# Convert lists to DataFrames for Excel export
-vulnerabilities_df = pd.DataFrame(vulnerabilities_data, columns=[
-    "Problem OCID", "Resource OCID", "Resource Name", "Resource Type", 
-    "Risk Level", "Status", "Region", "Compartment", 
-    "First Detected", "Last Detected", "Number of Critical CVEs", 
-    "Number of High CVEs", "Number of Medium CVEs", "Number of Low CVEs", 
-    "Critical CVEs", "High CVEs", "Medium CVEs", "Low CVEs", 
-    "Recommendation", "Description", "Lifecycle State", "Labels", "Detector ID"
-])
+        elif rid == RULE_CONTAINER_VULN:
+            # Container-only columns in EXACT order you requested
+            for k in CONTAINER_ONLY_AD_KEYS:
+                col = k if k not in row else f"Additional - {k}"
+                row[col] = get_add(add, k)
 
-open_ports_df = pd.DataFrame(open_ports_data, columns=[
-    "Problem OCID", "Resource OCID", "Resource Name", "Resource Type", 
-    "Risk Level", "Status", "Region", "Compartment", 
-    "First Detected", "Last Detected", "Open Ports", 
-    "Disallowed Ports", "Recommendation", 
-    "Description", "Lifecycle State", "Labels", "Detector ID"
-])
+            # Optional container CVE columns (same order as Host_Vuln)
+            row.update({
+                "CVE Critical Count": get_add(add, "CVE Critical Count") or get_add(add, "Number of Critical CVEs"),
+                "CVE High Count":     get_add(add, "CVE High Count")     or get_add(add, "Number of High CVEs"),
+                "CVE Medium Count":   get_add(add, "CVE Medium Count")   or get_add(add, "Number of Medium CVEs"),
+                "CVE Low Count":      get_add(add, "CVE Low Count")      or get_add(add, "Number of Low CVEs"),
+                "Critical CVEs":      get_add(add, "Critical CVEs"),
+                "High CVEs":          get_add(add, "High CVEs"),
+                "Medium CVEs":        get_add(add, "Medium CVEs"),
+                "Low CVEs":           get_add(add, "Low CVEs"),
+            })
+            container_vuln_rows.append(row)
 
-# Save both DataFrames to an Excel file with separate sheets
-output_file = "detailed_problem_report.xlsx"
-with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-    vulnerabilities_df.to_excel(writer, sheet_name='Vulnerabilities', index=False)
-    open_ports_df.to_excel(writer, sheet_name='Open Ports', index=False)
+        elif rid == RULE_HOST_OPEN_PORTS:
+            # keys vary slightly; try common variants
+            row["Open ports"] = get_add(add, "Open ports") or get_add(add, "Open Ports")
+            row["Disallowed ports list"] = get_add(add, "Disallowed ports list") or get_add(add, "Disallowed Ports List")
+            row["Allowed ports list"] = get_add(add, "Allowed ports list") or get_add(add, "Allowed Ports List")
+            host_open_ports_rows.append(row)
 
-print(f"Script executed successfully. Excel report saved as {output_file}")
+        if i % 50 == 0:
+            print(f"Fetched details: {i}/{len(filtered)}")
+
+    # ---- Per-sheet schema/order ----
+    host_vuln_schema = COMMON_COLS + HOST_VULN_KEYS
+    container_vuln_schema = COMMON_COLS + CONTAINER_ONLY_AD_KEYS + CONTAINER_VULN_KEYS
+    open_ports_schema = COMMON_COLS + OPEN_PORT_KEYS
+
+    host_vuln_df = drop_all_empty_cols(ensure_schema(pd.DataFrame(host_vuln_rows), host_vuln_schema))
+    container_vuln_df = drop_all_empty_cols(ensure_schema(pd.DataFrame(container_vuln_rows), container_vuln_schema))
+    open_ports_df = drop_all_empty_cols(ensure_schema(pd.DataFrame(host_open_ports_rows), open_ports_schema))
+
+    with pd.ExcelWriter(XLSX_OUT, engine="openpyxl") as w:
+        host_vuln_df.to_excel(w, sheet_name=SHEET_NAMES[RULE_HOST_VULN], index=False)
+        container_vuln_df.to_excel(w, sheet_name=SHEET_NAMES[RULE_CONTAINER_VULN], index=False)
+        open_ports_df.to_excel(w, sheet_name=SHEET_NAMES[RULE_HOST_OPEN_PORTS], index=False)
+
+    print(
+        f"Wrote Excel: {XLSX_OUT} | "
+        f"Host_Vuln={len(host_vuln_df)} rows, "
+        f"Container_Vuln={len(container_vuln_df)} rows, "
+        f"Host_Open_Ports={len(open_ports_df)} rows"
+    )
+
+
+if __name__ == "__main__":
+    main()
