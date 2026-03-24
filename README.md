@@ -43,14 +43,24 @@ Eg:
 python3 vss_cloudguard_report_script.py
 ```
 ### 4. Finally download the output from CLoudshell.
-This script will generate insights and save them to the `visualizations/` folder.
+This script will generate insights which is in an excel and save them to the `vss_cloudguard_problems.xlsx`.
 
 ## Sample Output
 
-The repository includes sample reports and visualizations to give you an idea of the output:
+Using region: us-ashburn-1
+Tenancy OCID: ocid1.tenancy.oc1..aaaaaaa....
+Total problems returned: 783
+Matched target rule IDs (by list_problems): 107
+Counts by list_problems detector_rule_id:
+  SCANNED_HOST_VULNERABILITY: 0
+  SCANNED_CONTAINER_IMAGE_VULNERABILITY: 106
+  SCANNED_HOST_OPEN_PORTS: 1
+Processed: 50/107 (get_ok=50, get_fail=0)
+Processed: 100/107 (get_ok=100, get_fail=0)
 
-- **Risk Breakdown**: Vulnerabilities categorized by severity.
-- **Resource Trends**: Number of vulnerabilities detected per resource type.
+get_problem results: OK=107, FAILED=0
+
+Wrote Excel: cloudguard_problems.xlsx | Host_Vuln=0 rows, Container_Vuln=106 rows, Host_Open_Ports=1 rows
 
 ## Contributing
 
