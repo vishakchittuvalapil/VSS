@@ -7,7 +7,7 @@ import oci
 import pandas as pd
 
 DEFAULT_REGION = "us-ashburn-1"
-XLSX_OUT = "cloudguard_problems.xlsx"
+XLSX_OUT = "vss_cloudguard_problems.xlsx"
 
 RULE_HOST_VULN = "SCANNED_HOST_VULNERABILITY"
 RULE_CONTAINER_VULN = "SCANNED_CONTAINER_IMAGE_VULNERABILITY"
