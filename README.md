@@ -47,6 +47,7 @@ This script will generate insights which is in an excel and save them to the `vs
 
 ## Sample Output
 
+```bash
 Using region: us-ashburn-1
 Tenancy OCID: ocid1.tenancy.oc1..aaaaaaa....
 Total problems returned: 783
@@ -61,6 +62,7 @@ Processed: 100/107 (get_ok=100, get_fail=0)
 get_problem results: OK=107, FAILED=0
 
 Wrote Excel: cloudguard_problems.xlsx | Host_Vuln=0 rows, Container_Vuln=106 rows, Host_Open_Ports=1 rows
+```
 
 ## Contributing
 
